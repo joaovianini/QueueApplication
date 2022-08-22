@@ -1,33 +1,35 @@
-import cmd, sys, queue, enum, json
+import cmd, sys, enum, json
 from operator import truediv
 from twisted.internet import reactor, threads
-from twisted.internet.protocol import Protocol, connectionDone 
-from twisted.internet.protocol import ReconnectingClientFactory as CltFactory
 from twisted.protocols.basic import LineReceiver
+from twisted.internet.stdio import StandardIO
+from twisted.internet.protocol import Protocol, connectionDone 
+from twisted.internet.protocol import ClientFactory as CltFactory
+from twisted.internet.endpoints import TCP4ClientEndpoint
 
-class Client(LineReceiver):
+
+class Client(Protocol):
     def __init__(self):
-        reactor.callInThread(CallControl(self).cmdloop())
+        StandardIO(LineProcessor(self))
+        self.message = ''
 
-    def connectionMade(self):
-        pass
-    
     def dataReceived(self, data):
         data = data.decode("utf-8")
         ddata = json.loads(data)
-        sys.stdout.write(ddata["response"])
+        print(ddata["response"])
 
-    def sendData(self,message):
-        self.sendLine(message.encode("utf-8"))
-    
-        
+    def sendData(self):
+        newmessage = self.message.encode('utf-8')
+        self.transport.write(newmessage)
+      
 class ClientFactory(CltFactory):
     def __init__(self):
-        self.connectedProtocol = None
+        super(ClientFactory,self).__init__()
+        self.clientInstance = None
         
     def buildProtocol(self, address):
         proto = Client()
-        self.connectedProtocol = proto
+        self.clientInstance = proto
         return proto
 
     def clientConnectionFailed(self, connector, reason):
@@ -38,12 +40,27 @@ class ClientFactory(CltFactory):
         print('Connection lost.')
         CltFactory.clientConnectionLost(self,connector,reason)
 
-class CallControl(cmd.Cmd):
+class LineProcessor(LineReceiver,object):
+    from os import linesep as delimiter
+    
     def __init__(self,client):
         self.client = client
-        super(CallControl,self).__init__()
-        print(type(client))
-    
+        self.processor = CallControl(client)
+        self.setRawMode()
+
+    def connectionMade(self):
+        self.transport.write(''.encode('utf-8'))
+        
+    def dataReceived(self, data):
+        self.processor.onecmd(data.decode('utf-8'))
+        self.transport.write(''.encode('utf-8'))
+        
+
+class CallControl(cmd.Cmd):
+    def __init__(self,client):
+        super().__init__()
+        self.client = client
+
     intro = 'This is a call center controller. Type help or ? to list commands.\n'
 
     def do_exit(self, arg):
@@ -54,7 +71,8 @@ class CallControl(cmd.Cmd):
             "id": id
         }
         data = json.dumps(ddata)
-        reactor.callFromThread(self.client.sendData(data))
+        self.client.message = data
+        self.client.sendData()
 
     def do_createOperator(self,arg):
         'Creates an operator with an ID'
@@ -64,8 +82,8 @@ class CallControl(cmd.Cmd):
             "id": id
         }
         data = json.dumps(ddata)
-        reactor.callFromThread(self.client.sendData(data))
-        
+        self.client.message = data
+        self.client.sendData(data)
 
     def do_call(self, arg):
         'Makes the application receive a call with id <id>: call 7'
@@ -75,7 +93,8 @@ class CallControl(cmd.Cmd):
             "id": id
         }
         data = json.dumps(ddata)
-        reactor.callFromThread(self.client.sendData(data))
+        self.client.message = data
+        self.client.sendData()
 
     def do_answer(self,arg):
         'Makes operator <id> answer a call being delivered to them: answer B'
@@ -85,8 +104,9 @@ class CallControl(cmd.Cmd):
             "id": id
         }
         data = json.dumps(ddata)
-        reactor.callFromThread(self.client.sendData(data))
-        
+        self.client.message = data
+        self.client.sendData()
+
     def do_hangup(self,arg):
         'Terminates a call with id'
         id = parse(arg)
@@ -95,8 +115,9 @@ class CallControl(cmd.Cmd):
             "id": id
         }
         data = json.dumps(ddata)
-        reactor.callFromThread(self.client.sendData(data))
-        
+        self.client.message = data
+        self.client.sendData()
+
     def do_reject(self,arg):
         'Rejects a call with Operator ID'
         id = parse(arg)
@@ -105,13 +126,14 @@ class CallControl(cmd.Cmd):
             "id": id
         }
         data = json.dumps(ddata)
-        reactor.callFromThread(self.client.sendData(data))
-      
+        self.client.message = data
+        self.client.sendData()
+
 def parse(arg):
     'Convert input argument into a string'
     return str(arg)
 
 if __name__ == '__main__':
-    myFactory = ClientFactory()
-    reactor.connectTCP('localhost', 5678, myFactory)
+    endpoint = TCP4ClientEndpoint(reactor, 'localhost', 5678)
+    endpoint.connect(ClientFactory())
     reactor.run()

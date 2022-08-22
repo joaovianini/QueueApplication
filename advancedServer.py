@@ -4,18 +4,23 @@ from venv import create
 from twisted.internet import reactor, protocol
 from twisted.internet.protocol import Protocol, connectionDone
 from twisted.internet.protocol import ServerFactory as ServFactory
+from twisted.internet.endpoints import TCP4ServerEndpoint
 
 class Server(Protocol):   
     def connectionMade(self):
         print("New connection")
 
     def dataReceived(self,data):
-        print("Message Received")
-        data = data.decode('utf-8')
-        incomingMessage = json.loads(data)
-        message = executeCommand(incomingMessage)
-        serverResponse = json.dumps(message)
-        self.transport.write(serverResponse.encode('utf-8'))
+        data = data.decode('utf-8')        
+        try:
+            incomingMessage = json.loads(data)
+            message = executeCommand(incomingMessage)
+            if message != "":
+                serverResponse = json.dumps(message)
+                self.transport.write(serverResponse.encode('utf-8'))
+        except:
+            print("Fail")
+       
 
     def connectionLost(self, reason=connectionDone):
         print("A connection was lost.")
@@ -23,9 +28,6 @@ class Server(Protocol):
 class ServerFactory(ServFactory):
     def buildProtocol(self, address):
         return Server()
-
-reactor.listenTCP(5678,ServerFactory())
-reactor.run()
 
 
 class OperatorState(enum.Enum):
@@ -41,7 +43,6 @@ class CallStatus(enum.Enum):
     MISSED = 5
 
 
-calls = queue.Queue(maxsize=0)
 callList = []
 
 class Call:
@@ -64,14 +65,18 @@ class Operator:
         
 def addCallToQueue(call, queue):
         calls.put(call)
-        print('Call ' + str(call.id) + ' waiting in queue ')
+        response = 'Call ' + str(call.id) + ' waiting in queue '
+        return response
 
 def answerCall(call,operator):
     call.status = CallStatus.ONGOING
     operator.state = OperatorState.BUSY
-    print('Call ' + str(call.id) + ' answered by operator ' + str(operator.id))
-    updateQueue(calls)
-    
+    response = 'Call ' + str(call.id) + ' answered by operator ' + str(operator.id)
+    response2 = updateQueue(calls)
+    if response2 != '':
+        response = response+ '\n'+response2
+    return response
+
 def ringCall(call,operator):
     call.status = CallStatus.RINGING
     operator.state = OperatorState.RINGING
@@ -80,13 +85,15 @@ def ringCall(call,operator):
     for key in callList:
         if key.id == call.id:
             key.operator = operator
-    print('Call ' + str(call.id) + ' ringing for operator ' + str(operator.id))
-
+    response = 'Call ' + str(call.id) + ' ringing for operator ' + str(operator.id)
+    return response
 
 def rejectCall(call, operator):
     call.status = CallStatus.REJECTED
     operator.state = OperatorState.AVAILABLE
     response = 'Call ' + str(call.id) + ' rejected by operator ' + str(operator.id)
+    response2 = updateQueue(calls)
+    response = response+response2
     return response
 
 def finishCall(call, operator):
@@ -94,6 +101,9 @@ def finishCall(call, operator):
     operator.state = OperatorState.AVAILABLE
     id = call.id
     response = 'Call ' + str(id) + ' finished and operator ' + str(operator.id) + ' available'
+    response2 = updateQueue(calls)
+    if response2 != "":
+        response = response+ '\n'+response2
     return response
 
 def missCall(call):
@@ -103,32 +113,39 @@ def missCall(call):
 
 def createCall(id):
     call = Call(id)
-    response = 'Call ' + str(call.id) + ' received'
+    response = 'Call ' + str(call.id) + ' received\n'
     callList.append(call)
-    associateOperatorWithCall(call)
+    response2 = associateOperatorWithCall(call)
+    response = response + response2
     return response
 
 def updateQueue(q):
     if(q.empty()):
-        return
+        return ""
     call = q.get()
     ringing = False
     for key in operators:
         if key.state == OperatorState.AVAILABLE and ringing == False:
-            ringCall(call,key)
+            response = ringCall(call,key)
             ringing = True
+            return response
+    print(ringing)
     if ringing == False:
         q.queue.insert(0,call)
+    return ""
 
 def associateOperatorWithCall(call):
     ringing = False
     for key in operators:
         if key.state == OperatorState.AVAILABLE and ringing == False:
-            ringCall(call,key)
+            response = ringCall(call,key)
             ringing = True
-    if ringing == False:
-        addCallToQueue(call, calls)
-        updateQueue(calls)
+    if ringing is False:
+        response = addCallToQueue(call, calls)
+        response2 = updateQueue(calls)
+        if response2 != "":
+            response = response+ '\n'+response2
+    return response
         
 def findOperatorbyID(operatorID):
     for key in operators:
@@ -140,17 +157,21 @@ def findCallAndTerminate(callID):
         if key.call.id == callID:
             if key.call.status == CallStatus.ONGOING:
                 response = finishCall(key.call, key)
-                updateQueue(calls)
+                response2 = updateQueue(calls)
+                if response2 != "":
+                    response = response+ '\n'+response2
                 return response
             elif key.call.status == CallStatus.RINGING:
                 response = missCall(key.call)
                 key.state = OperatorState.AVAILABLE
-                updateQueue(calls)
+                response2 = updateQueue(calls)
+                if response2 != "":
+                    response = response+ '\n'+response2
                 return response
-        for key in iter(calls.get, None):
-            if key.id == callID:
-                response = missCall(key)
-                return response
+    for key in iter(calls.get, None):
+        if key.id == callID:
+            response = missCall(key)
+            return response
     return "Call not found."
 
 def findCallAndReject(operatorID):
@@ -158,12 +179,15 @@ def findCallAndReject(operatorID):
         if key.id == operatorID:
             response = rejectCall(key.call, key)
             calls.queue.insert(0,key.call)
-    updateQueue(calls)
+    response2 = updateQueue(calls)
+    if response2 != "":
+        response = response+ '\n'+response2
     return response
     
 def addOperator(operatorID):
     op = Operator(operatorID)
     operators.append(op)
+    return ""
 
 
 def executeCommand(message):
@@ -180,11 +204,19 @@ def executeCommand(message):
         response = findCallAndTerminate(int(message["id"]))
     elif message["command"] == "reject":
         response = findCallAndReject(message["id"])
-    message = {
-        "response": message
+    answerMessage = {
+        "response": response
         }
-    return message
+    return answerMessage
 
-#for tests
 operators = []
+addOperator("A")
+addOperator("B")
+
+
+if __name__ == '__main__':
+    calls = queue.Queue(maxsize=0)
+    endpoint = TCP4ServerEndpoint(reactor, 5678)
+    endpoint.listen(ServerFactory())
+    reactor.run()
 
